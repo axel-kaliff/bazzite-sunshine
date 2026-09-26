@@ -246,9 +246,11 @@ jobs:
         uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6
 
       - name: Prepare KVM and SSH
+        id: prepare-vm
         run: |
+          echo "chown=$(id -u):$(id -g)" >> "$GITHUB_OUTPUT"
           sudo timeout 180 apt-get update
-          sudo timeout 180 apt-get install -y qemu-system-x86 qemu-utils podman
+          sudo timeout 180 apt-get install -y qemu-system-x86 qemu-utils
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
             sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo timeout 30 udevadm control --reload-rules
@@ -265,26 +267,22 @@ jobs:
           CONFIG
 
       - name: Build qcow2 from the tested digest
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          source image-template.env
-          image="ghcr.io/${REPO_ORGANIZATION}/${IMAGE_NAME}@${DIGEST}"
-          printf '%s' "$GHCR_TOKEN" | sudo timeout 60 podman login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          sudo timeout 900 podman pull "$image"
-          mkdir -p "$RUNNER_TEMP/vm-output"
-          sudo timeout 2400 podman run --rm --privileged --pull=newer --net=host \
-            --security-opt label=type:unconfined_t \
-            -v "$RUNNER_TEMP/vm-config.toml:/config.toml:ro" \
-            -v "$RUNNER_TEMP/vm-output:/output" \
-            -v /var/lib/containers/storage:/var/lib/containers/storage \
-            "$BIB_IMAGE" --type qcow2 --use-librepo=True --rootfs=btrfs "$image"
-          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/vm-output"
+        id: build-qcow2
+        uses: osbuild/bootc-image-builder-action@486ce86198c7d7e123a19dd239525562c4f520d0
+        with:
+          image: ghcr.io/axel-kaliff/bazzite-sunshine@${{ needs.build_push.outputs.digest }}
+          config-file: ${{ runner.temp }}/vm-config.toml
+          types: qcow2
+          rootfs: btrfs
+          additional-args: --use-librepo=True
+          chown: ${{ steps.prepare-vm.outputs.chown }}
 
       - name: Boot and verify deployment
+        env:
+          QCOW2_PATH: ${{ steps.build-qcow2.outputs.qcow2-output-path }}
         run: |
           timeout 900 qemu-system-x86_64 -enable-kvm -cpu host -m 6G -smp 2 -nographic -snapshot \
-            -drive "file=$RUNNER_TEMP/vm-output/qcow2/disk.qcow2,if=virtio,format=qcow2" \
+            -drive "file=$QCOW2_PATH,if=virtio,format=qcow2" \
             -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22 \
             -device virtio-net-pci,netdev=net0 > "$RUNNER_TEMP/serial.log" 2>&1 &
           vm_pid=$!
