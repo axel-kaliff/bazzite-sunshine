@@ -265,6 +265,12 @@ jobs:
             sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo timeout 30 udevadm control --reload-rules
           sudo timeout 30 udevadm trigger --name-match=kvm
+          sudo timeout 30 udevadm settle
+          if [[ ! -e /dev/kvm ]]; then
+            echo "no /dev/kvm on this runner"
+            exit 1
+          fi
+          ls -l /dev/kvm
           [[ -r /dev/kvm && -w /dev/kvm ]]
           timeout 30 ssh-keygen -t ed25519 -N '' -f "$RUNNER_TEMP/vm-key"
           cat > "$RUNNER_TEMP/vm-config.toml" <<CONFIG
