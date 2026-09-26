@@ -229,7 +229,8 @@ jobs:
     name: Boot the tested digest in a VM
     needs: build_push
     if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    runs-on: ubuntu-26.04
+    # bootc-image-builder cannot mount container storage on ubuntu-26.04 runners (runs 36255575262, 36257319278); the action's own CI uses 24.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
