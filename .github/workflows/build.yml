@@ -240,7 +240,7 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     # bootc-image-builder cannot mount container storage on ubuntu-26.04 runners (runs 36255575262, 36257319278); the action's own CI uses 24.04.
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     permissions:
       contents: read
       packages: read
@@ -297,7 +297,7 @@ jobs:
         env:
           QCOW2_PATH: ${{ steps.build-qcow2.outputs.qcow2-output-path }}
         run: |
-          timeout 900 qemu-system-x86_64 -enable-kvm -cpu host -m 6G -smp 2 -nographic -snapshot \
+          timeout 1800 qemu-system-x86_64 -enable-kvm -cpu host -m 6G -smp 2 -nographic -snapshot \
             -drive "file=$QCOW2_PATH,if=virtio,format=qcow2" \
             -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22 \
             -device virtio-net-pci,netdev=net0 > "$RUNNER_TEMP/serial.log" 2>&1 &
@@ -306,8 +306,7 @@ jobs:
           ssh_args=(-i "$RUNNER_TEMP/vm-key" -p 2222 -o BatchMode=yes
             -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
             -o ConnectTimeout=5 -o ConnectionAttempts=1 root@127.0.0.1)
-          timeout 600 bash -c 'until timeout 15 ssh "$@" true; do sleep 5; done' _ "${ssh_args[@]}"
-          timeout 720 ssh "${ssh_args[@]}" bash -s -- "$DIGEST" <<'GUEST'
+          cat > "$RUNNER_TEMP/vm-verify.sh" <<'GUEST'
           set -euo pipefail
           bootc status --json | jq -e --arg digest "$1" '.status.booted.image.imageDigest == $digest'
           echo 'PASS: booted image digest matches the tested digest'
@@ -323,6 +322,23 @@ jobs:
             echo "PASS: $unit enabled globally"
           done
           GUEST
+          timeout 1200 bash -c '
+            guest_script=$1
+            digest=$2
+            shift 2
+            while true; do
+              until timeout 15 ssh "$@" true; do sleep 5; done
+              if timeout 720 ssh "$@" bash -s -- "$digest" < "$guest_script"; then
+                break
+              else
+                status=$?
+              fi
+              if [[ $status -ne 255 ]]; then
+                exit "$status"
+              fi
+              echo "ssh dropped (likely first-boot reboot), retrying"
+            done
+          ' _ "$RUNNER_TEMP/vm-verify.sh" "$DIGEST" "${ssh_args[@]}"
 
       - name: Print serial console on failure
         if: failure()
