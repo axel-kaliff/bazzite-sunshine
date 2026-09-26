@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Hold the suspend inhibitor while a Moonlight client is connected.
+set -u
+
+LOG="${HOME}/.config/sunshine/sunshine.log"
+HELPER=/usr/libexec/bazzite-sunshine/stream-inhibit
+
+while true; do
+    connected=$(grep -c "CLIENT CONNECTED" "${LOG}" 2>/dev/null) || connected=0
+    disconnected=$(grep -c "CLIENT DISCONNECTED" "${LOG}" 2>/dev/null) || disconnected=0
+    if (( connected > disconnected )); then
+        timeout 30 "${HELPER}" on
+    elif timeout 10 systemctl --user is-active --quiet sunshine-stream-inhibit.service \
+        || [[ "$(timeout 10 gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 2>/dev/null)" == "'nothing'" ]]; then
+        timeout 30 "${HELPER}" off
+    fi
+    sleep 30
+done

@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart Sunshine after repeated failed health probes
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bazzite-sunshine/health-check

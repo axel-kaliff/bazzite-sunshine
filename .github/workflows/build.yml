@@ -21,9 +21,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test-scripts:
+    name: Test shell scripts
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Shellcheck and health tests
+        run: |
+          find build_files system_files tests -type f \( -name '*.sh' -o -path '*/libexec/bazzite-sunshine/*' \) -print0 |
+            xargs -0 shellcheck
+          timeout 60 bash tests/health-check.sh
+
   build_push:
     name: Build and push image
+    needs: test-scripts
     runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    outputs:
+      digest: ${{ steps.push-image.outputs.digest }}
 
     permissions:
       contents: read
@@ -65,6 +83,12 @@ jobs:
           # Lowercase the image uri https://github.com/macbre/push-to-ghcr/issues/12
           echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
           echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
+
+      - name: Resolve base image
+        run: |
+          digest=$(timeout 120 skopeo inspect --format '{{.Digest}}' docker://ghcr.io/ublue-os/bazzite-dx-nvidia-gnome:stable)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "BASE_IMAGE=ghcr.io/ublue-os/bazzite-dx-nvidia-gnome@${digest}" >> "$GITHUB_ENV"
 
       # This actually builds the container image
       - name: Build Image
@@ -112,6 +136,37 @@ jobs:
             "${IMAGE_NAME}" \
             "${DEFAULT_TAG}" \
             "${ALIAS_TAGS}"
+
+      - name: Container tests
+        run: |
+          timeout 120 podman run --rm --pull=never --cap-add=SYS_ADMIN --cap-add=SYS_NICE \
+            "${IMAGE_NAME}:${DEFAULT_TAG}" bash -euo pipefail -c '
+              rpm -q Sunshine
+              echo "PASS: Sunshine RPM installed"
+              getcap "$(readlink -f /usr/bin/sunshine)" | grep -w cap_sys_admin
+              echo "PASS: Sunshine has cap_sys_admin"
+              timeout 30 sunshine --version
+              echo "PASS: Sunshine version exits successfully"
+              shopt -s nullglob
+              for repo in /etc/yum.repos.d/*copr*; do
+                if grep -Eq "^[[:space:]]*enabled[[:space:]]*=[[:space:]]*1([[:space:]]|$)" "$repo"; then
+                  echo "FAIL: enabled COPR in $repo" >&2
+                  exit 1
+                fi
+              done
+              echo "PASS: no enabled COPRs"
+              for unit in app-dev.lizardbyte.app.Sunshine.service sunshine-stream-watchdog.service sunshine-health.timer; do
+                [[ $(systemctl --global is-enabled "$unit") == enabled ]]
+                echo "PASS: $unit enabled globally"
+              done
+              XDG_RUNTIME_DIR=$(mktemp -d)
+              export XDG_RUNTIME_DIR
+              systemd-analyze --user verify \
+                /usr/lib/systemd/user/sunshine-stream-watchdog.service \
+                /usr/lib/systemd/user/sunshine-health.service \
+                /usr/lib/systemd/user/sunshine-health.timer
+              echo "PASS: helper units verified"
+            '
 
       # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
       # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
@@ -162,3 +217,112 @@ jobs:
           # use old bundle format, so we can use newer cosign 3.X.X instead of 2.X.X
           cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY ${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}
 
+  vm-boot-test:
+    name: Boot the tested digest in a VM
+    needs: build_push
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      digest: ${{ needs.build_push.outputs.digest }}
+    env:
+      DIGEST: ${{ needs.build_push.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Maximize build space
+        uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6
+
+      - name: Prepare KVM and SSH
+        run: |
+          sudo timeout 180 apt-get update
+          sudo timeout 180 apt-get install -y qemu-system-x86 qemu-utils podman
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo timeout 30 udevadm control --reload-rules
+          sudo timeout 30 udevadm trigger --name-match=kvm
+          [[ -r /dev/kvm && -w /dev/kvm ]]
+          timeout 30 ssh-keygen -t ed25519 -N '' -f "$RUNNER_TEMP/vm-key"
+          cat > "$RUNNER_TEMP/vm-config.toml" <<CONFIG
+          [[customizations.user]]
+          name = "root"
+          key = "$(cat "$RUNNER_TEMP/vm-key.pub")"
+
+          [customizations.kernel]
+          append = "console=ttyS0 systemd.wants=sshd.service"
+          CONFIG
+
+      - name: Build qcow2 from the tested digest
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          source image-template.env
+          image="ghcr.io/${REPO_ORGANIZATION}/${IMAGE_NAME}@${DIGEST}"
+          printf '%s' "$GHCR_TOKEN" | sudo timeout 60 podman login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          sudo timeout 900 podman pull "$image"
+          mkdir -p "$RUNNER_TEMP/vm-output"
+          sudo timeout 2400 podman run --rm --privileged --pull=newer --net=host \
+            --security-opt label=type:unconfined_t \
+            -v "$RUNNER_TEMP/vm-config.toml:/config.toml:ro" \
+            -v "$RUNNER_TEMP/vm-output:/output" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            "$BIB_IMAGE" --type qcow2 --use-librepo=True --rootfs=btrfs "$image"
+          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/vm-output"
+
+      - name: Boot and verify deployment
+        run: |
+          timeout 900 qemu-system-x86_64 -enable-kvm -cpu host -m 6G -smp 2 -nographic -snapshot \
+            -drive "file=$RUNNER_TEMP/vm-output/qcow2/disk.qcow2,if=virtio,format=qcow2" \
+            -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22 \
+            -device virtio-net-pci,netdev=net0 > "$RUNNER_TEMP/serial.log" 2>&1 &
+          vm_pid=$!
+          trap 'kill "$vm_pid" 2>/dev/null || true; wait "$vm_pid" 2>/dev/null || true' EXIT
+          ssh_args=(-i "$RUNNER_TEMP/vm-key" -p 2222 -o BatchMode=yes
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+            -o ConnectTimeout=5 -o ConnectionAttempts=1 root@127.0.0.1)
+          timeout 600 bash -c 'until timeout 15 ssh "$@" true; do sleep 5; done' _ "${ssh_args[@]}"
+          timeout 60 ssh "${ssh_args[@]}" bash -s -- "$DIGEST" <<'GUEST'
+          set -euo pipefail
+          bootc status --json | jq -e --arg digest "$1" '.status.booted.image.imageDigest == $digest'
+          echo 'PASS: booted image digest matches the tested digest'
+          systemctl is-active multi-user.target
+          echo 'PASS: multi-user.target is active'
+          getcap "$(readlink -f /usr/bin/sunshine)" | grep -w cap_sys_admin
+          echo 'PASS: Sunshine cap_sys_admin survived deployment'
+          for unit in app-dev.lizardbyte.app.Sunshine.service sunshine-stream-watchdog.service sunshine-health.timer; do
+            [[ $(systemctl --global is-enabled "$unit") == enabled ]]
+            echo "PASS: $unit enabled globally"
+          done
+          GUEST
+
+      - name: Print serial console on failure
+        if: failure()
+        run: |
+          if [[ -f "$RUNNER_TEMP/serial.log" ]]; then
+            cat "$RUNNER_TEMP/serial.log"
+          fi
+
+  promote:
+    name: Promote the VM-tested digest
+    needs: vm-boot-test
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    env:
+      DIGEST: ${{ needs.vm-boot-test.outputs.digest }}
+    steps:
+      - name: Promote stable tags without rebuilding
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | timeout 60 skopeo login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          image=ghcr.io/axel-kaliff/bazzite-sunshine
+          for tag in stable "stable-$(date -u +%Y%m%d)"; do
+            timeout 360 skopeo copy --preserve-digests "docker://${image}@${DIGEST}" "docker://${image}:${tag}"
+          done

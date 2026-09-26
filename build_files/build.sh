@@ -2,26 +2,22 @@
 
 set -ouex pipefail
 
-# Copy the contents of system_files/ of the git repo to /
 cp -avf "/ctx/system_files"/. /
 
-### Install packages
+copr=lizardbyte/stable
+timeout 120 dnf5 -y copr enable "$copr"
+# Repository errors must fail instead of looking like an absent package.
+packages=$(timeout 300 dnf5 --refresh --repo='copr:copr.fedorainfracloud.org:lizardbyte:stable' \
+    --setopt='*.skip_if_unavailable=False' repoquery --available --queryformat '%{name}\n' Sunshine)
+if ! grep -qx Sunshine <<< "$packages"; then
+    timeout 120 dnf5 -y copr disable "$copr"
+    copr=lizardbyte/beta
+    timeout 120 dnf5 -y copr enable "$copr"
+fi
+echo "Installing Sunshine from $copr"
+timeout 600 dnf5 -y install Sunshine
+timeout 120 dnf5 -y copr disable "$copr"
 
-# Packages can be installed from any enabled yum repo on the image.
-# RPMfusion repos are available by default in ublue main images
-# List of rpmfusion packages can be found here:
-# https://mirrors.rpmfusion.org/mirrorlist?path=free/fedora/updates/43/x86_64/repoview/index.html&protocol=https&redirect=1
-
-# this installs a package from fedora repos
-dnf5 install -y tmux
-
-# Use a COPR Example:
-#
-# dnf5 -y copr enable ublue-os/staging
-# dnf5 -y install package
-# Disable COPRs so they don't end up enabled on the final image:
-# dnf5 -y copr disable ublue-os/staging
-
-#### Example for enabling a System Unit File
-
-systemctl enable podman.socket
+getcap "$(readlink -f /usr/bin/sunshine)" | grep -w cap_sys_admin
+timeout 30 systemctl --global enable app-dev.lizardbyte.app.Sunshine.service \
+    sunshine-stream-watchdog.service sunshine-health.timer

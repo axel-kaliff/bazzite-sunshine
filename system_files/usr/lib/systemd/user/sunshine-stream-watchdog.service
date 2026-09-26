@@ -1,0 +1,10 @@
+[Unit]
+Description=Release Sunshine suspend inhibitor when no Moonlight client is connected
+
+[Service]
+ExecStart=/usr/libexec/bazzite-sunshine/stream-watchdog
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Block idle-triggered suspend while a Sunshine stream is active.
+set -u
+case "${1:-}" in
+    on)
+        timeout 10 systemctl --user is-active sunshine-stream-inhibit.service >/dev/null 2>&1 || \
+        timeout 10 systemd-run --user --collect --unit=sunshine-stream-inhibit \
+            systemd-inhibit --what=sleep:idle --who=Sunshine \
+            --why="Moonlight stream active" --mode=block sleep infinity
+        # GNOME's auto-suspend does not reliably honor foreign inhibitors.
+        if [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]]; then
+            timeout 10 gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'
+        fi
+        ;;
+    off)
+        timeout 10 systemctl --user stop sunshine-stream-inhibit.service 2>/dev/null || true
+        if [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]]; then
+            timeout 10 gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'suspend'
+        fi
+        ;;
+    *)
+        echo "usage: $0 on|off" >&2
+        exit 1
+        ;;
+esac

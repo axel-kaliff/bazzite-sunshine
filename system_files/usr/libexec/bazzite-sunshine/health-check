@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOG=${LOG:-${HOME}/.config/sunshine/sunshine.log}
+STATE_DIR=${STATE_DIR:-${XDG_RUNTIME_DIR}/bazzite-sunshine}
+CURL=${CURL:-curl}
+SYSTEMCTL=${SYSTEMCTL:-systemctl}
+unit=app-dev.lizardbyte.app.Sunshine.service
+mkdir -p "$STATE_DIR"
+
+streaming() {
+    local connected disconnected
+    connected=$(grep -c 'CLIENT CONNECTED' "$LOG" 2>/dev/null) || connected=0
+    disconnected=$(grep -c 'CLIENT DISCONNECTED' "$LOG" 2>/dev/null) || disconnected=0
+    (( connected > disconnected ))
+}
+
+if ! timeout 10 "$SYSTEMCTL" --user is-active --quiet "$unit"; then
+    rm -f "$STATE_DIR/failures"
+    exit 0
+fi
+entered=$(timeout 10 "$SYSTEMCTL" --user show "$unit" --property=ActiveEnterTimestampMonotonic --value)
+read -r uptime _ < /proc/uptime
+now=${uptime%%.*}
+if (( now * 1000000 - entered < 120000000 )) || streaming; then
+    rm -f "$STATE_DIR/failures"
+    exit 0
+fi
+
+result=0
+"$CURL" -sk --max-time 5 -o /dev/null https://127.0.0.1:47984/serverinfo || result=$?
+if (( result != 7 && result != 28 )); then
+    rm -f "$STATE_DIR/failures"
+    exit 0
+fi
+
+previous=0
+failures=0
+if [[ -f "$STATE_DIR/failures" ]]; then
+    read -r previous failures < "$STATE_DIR/failures"
+fi
+if [[ "$previous" != "$entered" ]]; then
+    failures=0
+fi
+failures=$((failures + 1))
+printf '%s %s\n' "$entered" "$failures" > "$STATE_DIR/failures"
+(( failures >= 3 )) || exit 0
+
+restarts=()
+if [[ -f "$STATE_DIR/restarts" ]]; then
+    while read -r restarted; do
+        if (( now - restarted < 3600 )); then
+            restarts+=("$restarted")
+        fi
+    done < "$STATE_DIR/restarts"
+fi
+if (( ${#restarts[@]} >= 3 )); then
+    echo 'Sunshine health: rate-limited after 3 restarts in the last hour'
+    exit 0
+fi
+
+# A client or a new Sunshine process may have appeared during the probe.
+if streaming || ! timeout 10 "$SYSTEMCTL" --user is-active --quiet "$unit" \
+    || [[ "$(timeout 10 "$SYSTEMCTL" --user show "$unit" --property=ActiveEnterTimestampMonotonic --value)" != "$entered" ]]; then
+    rm -f "$STATE_DIR/failures"
+    exit 0
+fi
+timeout 30 "$SYSTEMCTL" --user restart "$unit"
+printf '%s\n' "${restarts[@]}" "$now" > "$STATE_DIR/restarts"
+rm -f "$STATE_DIR/failures"
+echo "Sunshine health: restarted after 3 failed probes (curl exit $result: refused or timed out)"
