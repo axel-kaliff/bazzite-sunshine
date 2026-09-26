@@ -5,6 +5,7 @@ and adds the native Sunshine RPM for a dedicated, single-user streaming host.
 KMS capture needs `cap_sys_admin`, which the Flatpak cannot provide;
 the native package also supports NVIDIA NVENC encoding.
 The RPM's capability must survive both image construction and VM deployment.
+The image also carries `k3s-selinux` for this PC's k3s/KubeVirt test lab.
 
 Sunshine comes from `lizardbyte/stable`. Beta is used only when stable has
 no Sunshine package for the Fedora release; other installation failures

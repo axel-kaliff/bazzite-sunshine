@@ -143,6 +143,10 @@ jobs:
             "${IMAGE_NAME}:${DEFAULT_TAG}" bash -euo pipefail -c '
               rpm -q Sunshine
               echo "PASS: Sunshine RPM installed"
+              rpm -q k3s-selinux
+              echo "PASS: k3s-selinux RPM installed"
+              semodule -l | grep -Eq "^k3s([[:space:]]|$)"
+              echo "PASS: k3s SELinux module installed"
               getcap "$(readlink -f /usr/bin/sunshine)" | grep -w cap_sys_admin
               echo "PASS: Sunshine has cap_sys_admin"
               linked_libraries=$(ldd "$(readlink -f /usr/bin/sunshine)")
@@ -163,6 +167,11 @@ jobs:
                 fi
               done
               echo "PASS: LizardByte COPRs disabled"
+              for repo in /etc/yum.repos.d/*rancher*; do
+                echo "FAIL: Rancher repo remains in $repo" >&2
+                exit 1
+              done
+              echo "PASS: Rancher repo removed"
               for unit in app-dev.lizardbyte.app.Sunshine.service sunshine-stream-watchdog.service sunshine-health.timer; do
                 [[ $(systemctl --global is-enabled "$unit") == enabled ]]
                 echo "PASS: $unit enabled globally"
