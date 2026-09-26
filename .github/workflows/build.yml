@@ -301,10 +301,13 @@ jobs:
             -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
             -o ConnectTimeout=5 -o ConnectionAttempts=1 root@127.0.0.1)
           timeout 600 bash -c 'until timeout 15 ssh "$@" true; do sleep 5; done' _ "${ssh_args[@]}"
-          timeout 60 ssh "${ssh_args[@]}" bash -s -- "$DIGEST" <<'GUEST'
+          timeout 720 ssh "${ssh_args[@]}" bash -s -- "$DIGEST" <<'GUEST'
           set -euo pipefail
           bootc status --json | jq -e --arg digest "$1" '.status.booted.image.imageDigest == $digest'
           echo 'PASS: booted image digest matches the tested digest'
+          state=$(timeout 600 systemctl is-system-running --wait || true)
+          echo "system state: $state"
+          systemctl --failed --no-legend --plain || true
           systemctl is-active multi-user.target
           echo 'PASS: multi-user.target is active'
           getcap "$(readlink -f /usr/bin/sunshine)" | grep -w cap_sys_admin
