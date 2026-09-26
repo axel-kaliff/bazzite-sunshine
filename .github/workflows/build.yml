@@ -145,8 +145,16 @@ jobs:
               echo "PASS: Sunshine RPM installed"
               getcap "$(readlink -f /usr/bin/sunshine)" | grep -w cap_sys_admin
               echo "PASS: Sunshine has cap_sys_admin"
-              timeout 30 sunshine --version
-              echo "PASS: Sunshine version exits successfully"
+              linked_libraries=$(ldd "$(readlink -f /usr/bin/sunshine)")
+              if printf "%s\n" "$linked_libraries" | grep "not found"; then
+                exit 1
+              fi
+              echo "PASS: all linked libraries resolve"
+              if ! verification=$(rpm -V --nomtime Sunshine 2>&1); then
+                printf "%s\n" "$verification"
+                exit 1
+              fi
+              echo "PASS: Sunshine files and capabilities match the RPM"
               shopt -s nullglob
               for repo in /etc/yum.repos.d/*copr*; do
                 if grep -Eq "^[[:space:]]*enabled[[:space:]]*=[[:space:]]*1([[:space:]]|$)" "$repo"; then
