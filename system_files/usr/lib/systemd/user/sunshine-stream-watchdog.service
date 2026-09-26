@@ -1,4 +1,6 @@
 [Unit]
+PartOf=graphical-session.target
+After=graphical-session.target
 Description=Release Sunshine suspend inhibitor when no Moonlight client is connected
 
 [Service]
@@ -7,4 +9,4 @@ Restart=always
 RestartSec=30
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
