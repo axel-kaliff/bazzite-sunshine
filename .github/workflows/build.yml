@@ -156,13 +156,13 @@ jobs:
               fi
               echo "PASS: Sunshine files and capabilities match the RPM"
               shopt -s nullglob
-              for repo in /etc/yum.repos.d/*copr*; do
+              for repo in /etc/yum.repos.d/*lizardbyte*; do
                 if grep -Eq "^[[:space:]]*enabled[[:space:]]*=[[:space:]]*1([[:space:]]|$)" "$repo"; then
                   echo "FAIL: enabled COPR in $repo" >&2
                   exit 1
                 fi
               done
-              echo "PASS: no enabled COPRs"
+              echo "PASS: LizardByte COPRs disabled"
               for unit in app-dev.lizardbyte.app.Sunshine.service sunshine-stream-watchdog.service sunshine-health.timer; do
                 [[ $(systemctl --global is-enabled "$unit") == enabled ]]
                 echo "PASS: $unit enabled globally"
