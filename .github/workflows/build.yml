@@ -284,7 +284,7 @@ jobs:
 
       - name: Build qcow2 from the tested digest
         id: build-qcow2
-        uses: osbuild/bootc-image-builder-action@486ce86198c7d7e123a19dd239525562c4f520d0
+        uses: osbuild/bootc-image-builder-action@028e4d28330efe546229eb9cb52aee78174d2347
         with:
           image: ghcr.io/axel-kaliff/bazzite-sunshine@${{ needs.build_push.outputs.digest }}
           config-file: ${{ runner.temp }}/vm-config.toml
